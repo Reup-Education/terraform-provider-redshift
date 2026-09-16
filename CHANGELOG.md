@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [v1.4.0](https://github.com/Reup-Education/terraform-provider-redshift/tree/v1.4.0) (2026-09-16)
+
+[Full Changelog](https://github.com/Reup-Education/terraform-provider-redshift/compare/v1.3.6...v1.4.0)
 
 **New features (ReUp fork):**
 

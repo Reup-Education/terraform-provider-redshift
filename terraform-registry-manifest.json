@@ -1,29 +1,6 @@
 {
   "version": 1,
   "metadata": {
-    "protocol_versions": ["5.0"],
-    "podcast": {
-      "title": "Terraform Provider for AWS Redshift",
-      "description": "A Terraform provider for managing AWS Redshift resources including users, groups, schemas, and more. Supports both regular Redshift clusters and Redshift Serverless.",
-      "image_url": "https://raw.githubusercontent.com/serenityzn/terraform-provider-redshift/main/docs/logo.png",
-      "link": "https://github.com/serenityzn/terraform-provider-redshift"
-    }
-  },
-  "namespace": "serenityzn",
-  "name": "redshift",
-  "provider": "redshift",
-  "description": "Terraform provider for AWS Redshift with support for both regular clusters and Redshift Serverless",
-  "website": "https://github.com/serenityzn/terraform-provider-redshift",
-  "logo_url": "https://raw.githubusercontent.com/serenityzn/terraform-provider-redshift/main/docs/logo.png",
-  "source": "https://github.com/serenityzn/terraform-provider-redshift",
-  "category": "database",
-  "tier": "community",
-  "docs": {
-    "source": "https://github.com/serenityzn/terraform-provider-redshift/tree/main/docs"
-  },
-  "support": {
-    "email": "support@serenityzn.com",
-    "issues": "https://github.com/serenityzn/terraform-provider-redshift/issues",
-    "source": "https://github.com/serenityzn/terraform-provider-redshift"
+    "protocol_versions": ["5.0"]
   }
-} 
+}
