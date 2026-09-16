@@ -3,12 +3,15 @@
 page_title: "redshift_grant Resource - terraform-provider-redshift"
 subcategory: ""
 description: |-
-  Defines access privileges for users and  groups. Privileges include access options such as being able to read data in tables and views, write data, create tables, and drop tables. Use this command to give specific privileges for a table, database, schema, function, procedure, language, or column.
+  Defines access privileges for users, groups, and roles. Privileges include access options such as being able to read data in tables and views, write data, create tables, and drop tables. Use this command to give specific privileges for a table, database, schema, function, procedure, language, or column.
+  Exactly one of user, group, or role must be set. Granting to a role authorizes every user and role that inherits it (see redshift_role_grant) with these privileges, without needing to grant them individually.
 ---
 
 # redshift_grant (Resource)
 
-Defines access privileges for users and  groups. Privileges include access options such as being able to read data in tables and views, write data, create tables, and drop tables. Use this command to give specific privileges for a table, database, schema, function, procedure, language, or column.
+Defines access privileges for users, groups, and roles. Privileges include access options such as being able to read data in tables and views, write data, create tables, and drop tables. Use this command to give specific privileges for a table, database, schema, function, procedure, language, or column.
+
+Exactly one of `user`, `group`, or `role` must be set. Granting to a role authorizes every user and role that inherits it (see `redshift_role_grant`) with these privileges, without needing to grant them individually.
 
 ## Example Usage
 
@@ -25,6 +28,15 @@ resource "redshift_grant" "group" {
   schema      = "my_schema"
   object_type = "schema"
   privileges  = ["usage"]
+}
+
+# Granting to a role authorizes every user or role it's been assigned to
+# (via redshift_role_grant) with these privileges
+resource "redshift_grant" "role" {
+  role        = redshift_role.data_engineer.name
+  schema      = "my_schema"
+  object_type = "schema"
+  privileges  = ["create", "usage"]
 }
 
 # Granting permissions to execute functions or procedures requires providing their arguments' types
@@ -51,14 +63,15 @@ resource "redshift_grant" "public" {
 ### Required
 
 - **object_type** (String) The Redshift object type to grant privileges on (one of: table, schema, database, function, procedure, language).
-- **privileges** (Set of String) The list of privileges to apply as default privileges. See [GRANT command documentation](https://docs.aws.amazon.com/redshift/latest/dg/r_GRANT.html) to see what privileges are available to which object type. An empty list could be provided to revoke all privileges for this user or group. Required when `object_type` is set to `language`.
+- **privileges** (Set of String) The list of privileges to apply as default privileges. See [GRANT command documentation](https://docs.aws.amazon.com/redshift/latest/dg/r_GRANT.html) to see what privileges are available to which object type. An empty list could be provided to revoke all privileges for this user, group, or role. Required when `object_type` is set to `language`.
 
 ### Optional
 
-- **group** (String) The name of the group to grant privileges on. Either `group` or `user` parameter must be set. Settings the group name to `public` or `PUBLIC` (it is case insensitive in this case) will result in a `GRANT ... TO PUBLIC` statement.
+- **group** (String) The name of the group to grant privileges on. Exactly one of `group`, `user`, or `role` must be set. Settings the group name to `public` or `PUBLIC` (it is case insensitive in this case) will result in a `GRANT ... TO PUBLIC` statement.
 - **id** (String) The ID of this resource.
 - **objects** (Set of String) The objects upon which to grant the privileges. An empty list (the default) means to grant permissions on all objects of the specified type. Ignored when `object_type` is one of (`database`, `schema`).
+- **role** (String) The name of the role to grant privileges on. Exactly one of `role`, `user`, or `group` must be set. Every user or role that this role is granted to (via `redshift_role_grant`) inherits these privileges.
 - **schema** (String) The database schema to grant privileges on.
-- **user** (String) The name of the user to grant privileges on. Either `user` or `group` parameter must be set.
+- **user** (String) The name of the user to grant privileges on. Exactly one of `user`, `group`, or `role` must be set.
 
 

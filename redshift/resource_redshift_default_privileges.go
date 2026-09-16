@@ -14,6 +14,7 @@ import (
 const (
 	defaultPrivilegesUserAttr       = "user"
 	defaultPrivilegesGroupAttr      = "group"
+	defaultPrivilegesRoleAttr       = "role"
 	defaultPrivilegesOwnerAttr      = "owner"
 	defaultPrivilegesSchemaAttr     = "schema"
 	defaultPrivilegesPrivilegesAttr = "privileges"
@@ -30,10 +31,18 @@ var defaultPrivilegesObjectTypesCodes = map[string]string{
 	"table": "r",
 }
 
+// defaultPrivilegesObjectTypesSvvNames maps this resource's object_type values to the
+// object_type values reported by SVV_DEFAULT_PRIVILEGES, used for the role code path.
+var defaultPrivilegesObjectTypesSvvNames = map[string]string{
+	"TABLE": "RELATION",
+}
+
 func redshiftDefaultPrivileges() *schema.Resource {
 	return &schema.Resource{
-		Description: `Defines the default set of access privileges to be applied to objects that are created in the future by the specified user. By default, users can change only their own default access privileges. Only a superuser can specify default privileges for other users.`,
-		Read:        RedshiftResourceFunc(resourceRedshiftDefaultPrivilegesRead),
+		Description: `Defines the default set of access privileges to be applied to objects that are created in the future by the specified user. By default, users can change only their own default access privileges. Only a superuser can specify default privileges for other users.
+
+Exactly one of ` + "`user`" + `, ` + "`group`" + `, or ` + "`role`" + ` must be set.`,
+		Read: RedshiftResourceFunc(resourceRedshiftDefaultPrivilegesRead),
 		Create: RedshiftResourceFunc(
 			RedshiftResourceRetryOnPQErrors(resourceRedshiftDefaultPrivilegesCreate),
 		),
@@ -56,15 +65,25 @@ func redshiftDefaultPrivileges() *schema.Resource {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
-				ExactlyOneOf: []string{defaultPrivilegesGroupAttr, defaultPrivilegesUserAttr},
-				Description:  "The name of the  group to which the specified default privileges are applied.",
+				ExactlyOneOf: []string{defaultPrivilegesGroupAttr, defaultPrivilegesUserAttr, defaultPrivilegesRoleAttr},
+				Description:  "The name of the group to which the specified default privileges are applied. Exactly one of `group`, `user`, or `role` must be set.",
 			},
 			defaultPrivilegesUserAttr: {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
-				ExactlyOneOf: []string{defaultPrivilegesGroupAttr, defaultPrivilegesUserAttr},
-				Description:  "The name of the user to which the specified default privileges are applied.",
+				ExactlyOneOf: []string{defaultPrivilegesGroupAttr, defaultPrivilegesUserAttr, defaultPrivilegesRoleAttr},
+				Description:  "The name of the user to which the specified default privileges are applied. Exactly one of `user`, `group`, or `role` must be set.",
+			},
+			defaultPrivilegesRoleAttr: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ExactlyOneOf: []string{defaultPrivilegesGroupAttr, defaultPrivilegesUserAttr, defaultPrivilegesRoleAttr},
+				Description:  "The name of the role to which the specified default privileges are applied. Exactly one of `role`, `user`, or `group` must be set.",
+				StateFunc: func(val interface{}) string {
+					return strings.ToLower(val.(string))
+				},
 			},
 			defaultPrivilegesOwnerAttr: {
 				Type:        schema.TypeString,
@@ -156,6 +175,13 @@ func resourceRedshiftDefaultPrivilegesRead(db *DBConnection, d *schema.ResourceD
 }
 
 func resourceRedshiftDefaultPrivilegesReadImpl(db *DBConnection, d *schema.ResourceData) error {
+	// Role default privileges are read from SVV_DEFAULT_PRIVILEGES, which reports
+	// grantee_type = 'role' directly by name, instead of the legacy pg_default_acl
+	// ACL-array parsing (and the ID lookups it requires) used below for users and groups.
+	if _, isRole := d.GetOk(defaultPrivilegesRoleAttr); isRole {
+		return readRoleDefaultPrivileges(db, d)
+	}
+
 	var entityID int
 	var entityIsUser bool
 	schemaName, schemaNameSet := d.GetOk(defaultPrivilegesSchemaAttr)
@@ -286,6 +312,54 @@ func readGroupTableDefaultPrivileges(tx *sql.Tx, d *schema.ResourceData, entityI
 	return nil
 }
 
+// readRoleDefaultPrivileges reads back the default privileges currently granted to a
+// role for future objects, using the SVV_DEFAULT_PRIVILEGES system view.
+func readRoleDefaultPrivileges(db *DBConnection, d *schema.ResourceData) error {
+	roleName := d.Get(defaultPrivilegesRoleAttr).(string)
+	ownerName := d.Get(defaultPrivilegesOwnerAttr).(string)
+	schemaName, schemaNameSet := d.GetOk(defaultPrivilegesSchemaAttr)
+
+	objectType := strings.ToUpper(d.Get(defaultPrivilegesObjectTypeAttr).(string))
+	svvObjectType, ok := defaultPrivilegesObjectTypesSvvNames[objectType]
+	if !ok {
+		return fmt.Errorf("unsupported %s %s", defaultPrivilegesObjectTypeAttr, objectType)
+	}
+
+	query := `
+		SELECT privilege_type FROM svv_default_privileges
+		WHERE object_type = $1 AND owner_name = $2 AND grantee_type = 'role' AND grantee_name = $3
+	`
+	args := []interface{}{svvObjectType, ownerName, roleName}
+
+	if schemaNameSet {
+		query += " AND schema_name = $4"
+		args = append(args, schemaName.(string))
+	} else {
+		query += " AND schema_name IS NULL"
+	}
+
+	log.Printf("[DEBUG] Reading role default privileges for role %s: %s", roleName, query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to read role default privileges: %w", err)
+	}
+	defer rows.Close()
+
+	privileges := schema.NewSet(schema.HashString, nil)
+	for rows.Next() {
+		var privilege string
+		if err := rows.Scan(&privilege); err != nil {
+			return err
+		}
+		privileges.Add(strings.ToLower(privilege))
+	}
+
+	d.Set(defaultPrivilegesPrivilegesAttr, privileges)
+
+	return nil
+}
+
 func generateDefaultPrivilegesID(d *schema.ResourceData) string {
 	var entityName, schemaName string
 
@@ -293,6 +367,8 @@ func generateDefaultPrivilegesID(d *schema.ResourceData) string {
 		entityName = fmt.Sprintf("gn:%s", groupName.(string))
 	} else if userName, isUser := d.GetOk(defaultPrivilegesUserAttr); isUser {
 		entityName = fmt.Sprintf("un:%s", userName.(string))
+	} else if roleName, isRole := d.GetOk(defaultPrivilegesRoleAttr); isRole {
+		entityName = fmt.Sprintf("rn:%s", roleName.(string))
 	}
 
 	if schemaNameRaw, schemaNameSet := d.GetOk(defaultPrivilegesSchemaAttr); schemaNameSet {
@@ -320,6 +396,9 @@ func createAlterDefaultsGrantQuery(d *schema.ResourceData, privileges []string) 
 		toWhomIndicator = "GROUP"
 	} else if userName, isUser := d.GetOk(defaultPrivilegesUserAttr); isUser {
 		entityName = userName.(string)
+	} else if roleName, isRole := d.GetOk(defaultPrivilegesRoleAttr); isRole {
+		entityName = roleName.(string)
+		toWhomIndicator = "ROLE"
 	}
 
 	alterQuery := fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR USER %s", pq.QuoteIdentifier(ownerName))
@@ -349,6 +428,9 @@ func createAlterDefaultsRevokeQuery(d *schema.ResourceData) string {
 		fromWhomIndicator = "GROUP"
 	} else if userName, isUser := d.GetOk(defaultPrivilegesUserAttr); isUser {
 		entityName = userName.(string)
+	} else if roleName, isRole := d.GetOk(defaultPrivilegesRoleAttr); isRole {
+		entityName = roleName.(string)
+		fromWhomIndicator = "ROLE"
 	}
 
 	alterQuery := fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR USER %s", pq.QuoteIdentifier(ownerName))

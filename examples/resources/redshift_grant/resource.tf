@@ -12,6 +12,15 @@ resource "redshift_grant" "group" {
   privileges  = ["usage"]
 }
 
+# Granting to a role authorizes every user or role it's been assigned to
+# (via redshift_role_grant) with these privileges
+resource "redshift_grant" "role" {
+  role        = redshift_role.data_engineer.name
+  schema      = "my_schema"
+  object_type = "schema"
+  privileges  = ["create", "usage"]
+}
+
 # Granting permissions to execute functions or procedures requires providing their arguments' types
 resource "redshift_grant" "user" {
   user        = "john"

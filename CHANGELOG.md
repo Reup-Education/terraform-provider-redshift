@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+**New features (ReUp fork):**
+
+- Add `redshift_role` resource to create and manage Redshift roles (`CREATE ROLE` / `ALTER ROLE` / `DROP ROLE`)
+- Add `redshift_role_grant` resource to assign a role to a user or to another role (`GRANT ROLE` / `REVOKE ROLE`), supporting nested role hierarchies and `WITH ADMIN OPTION`
+- Add `redshift_role_system_privileges` resource to grant system-level privileges to a role (for example `CREATE TABLE`, `CREATE USER`), read from `SVV_SYSTEM_PRIVILEGES`
+- Add `role` as a grantee option to `redshift_grant` (object-level privileges on tables, schemas, databases, functions, procedures, languages), read from the `SVV_*_PRIVILEGES` system views
+- Add `role` as a grantee option to `redshift_default_privileges` (privileges applied automatically to future objects), read from `SVV_DEFAULT_PRIVILEGES`
+
 ## [v1.3.6](https://github.com/serenityzn/terraform-provider-redshift/tree/v1.3.6) (2026-05-05)
 
 [Full Changelog](https://github.com/serenityzn/terraform-provider-redshift/compare/v1.3.5...v1.3.6)

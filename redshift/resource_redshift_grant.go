@@ -15,6 +15,7 @@ import (
 const (
 	grantUserAttr       = "user"
 	grantGroupAttr      = "group"
+	grantRoleAttr       = "role"
 	grantSchemaAttr     = "schema"
 	grantObjectTypeAttr = "object_type"
 	grantObjectsAttr    = "objects"
@@ -41,7 +42,9 @@ var grantObjectTypesCodes = map[string][]string{
 func redshiftGrant() *schema.Resource {
 	return &schema.Resource{
 		Description: `
-Defines access privileges for users and  groups. Privileges include access options such as being able to read data in tables and views, write data, create tables, and drop tables. Use this command to give specific privileges for a table, database, schema, function, procedure, language, or column.
+Defines access privileges for users, groups, and roles. Privileges include access options such as being able to read data in tables and views, write data, create tables, and drop tables. Use this command to give specific privileges for a table, database, schema, function, procedure, language, or column.
+
+Exactly one of ` + "`user`" + `, ` + "`group`" + `, or ` + "`role`" + ` must be set. Granting to a role authorizes every user and role that inherits it (see ` + "`redshift_role_grant`" + `) with these privileges, without needing to grant them individually.
 `,
 		Read: RedshiftResourceFunc(resourceRedshiftGrantRead),
 		Create: RedshiftResourceFunc(
@@ -61,22 +64,32 @@ Defines access privileges for users and  groups. Privileges include access optio
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
-				ExactlyOneOf: []string{grantUserAttr, grantGroupAttr},
-				Description:  "The name of the user to grant privileges on. Either `user` or `group` parameter must be set.",
+				ExactlyOneOf: []string{grantUserAttr, grantGroupAttr, grantRoleAttr},
+				Description:  "The name of the user to grant privileges on. Exactly one of `user`, `group`, or `role` must be set.",
 				ValidateFunc: validation.StringDoesNotMatch(regexp.MustCompile("^(?i)public$"), "User name cannot be 'public'. To use GRANT ... TO PUBLIC set the group name to 'public' instead."),
 			},
 			grantGroupAttr: {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
-				ExactlyOneOf: []string{grantUserAttr, grantGroupAttr},
-				Description:  "The name of the group to grant privileges on. Either `group` or `user` parameter must be set. Settings the group name to `public` or `PUBLIC` (it is case insensitive in this case) will result in a `GRANT ... TO PUBLIC` statement.",
+				ExactlyOneOf: []string{grantUserAttr, grantGroupAttr, grantRoleAttr},
+				Description:  "The name of the group to grant privileges on. Exactly one of `group`, `user`, or `role` must be set. Settings the group name to `public` or `PUBLIC` (it is case insensitive in this case) will result in a `GRANT ... TO PUBLIC` statement.",
 				StateFunc: func(val interface{}) string {
 					name := val.(string)
 					if strings.ToLower(name) == grantToPublicName {
 						return strings.ToLower(name)
 					}
 					return name
+				},
+			},
+			grantRoleAttr: {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				ExactlyOneOf: []string{grantUserAttr, grantGroupAttr, grantRoleAttr},
+				Description:  "The name of the role to grant privileges on. Exactly one of `role`, `user`, or `group` must be set. Every user or role that this role is granted to (via `redshift_role_grant`) inherits these privileges.",
+				StateFunc: func(val interface{}) string {
+					return strings.ToLower(val.(string))
 				},
 			},
 			grantSchemaAttr: {
@@ -114,7 +127,7 @@ Defines access privileges for users and  groups. Privileges include access optio
 					},
 				},
 				Set:         schema.HashString,
-				Description: "The list of privileges to apply as default privileges. See [GRANT command documentation](https://docs.aws.amazon.com/redshift/latest/dg/r_GRANT.html) to see what privileges are available to which object type. An empty list could be provided to revoke all privileges for this user or group. Required when `object_type` is set to `language`.",
+				Description: "The list of privileges to apply as default privileges. See [GRANT command documentation](https://docs.aws.amazon.com/redshift/latest/dg/r_GRANT.html) to see what privileges are available to which object type. An empty list could be provided to revoke all privileges for this user, group, or role. Required when `object_type` is set to `language`.",
 			},
 		},
 	}
@@ -195,6 +208,13 @@ func resourceRedshiftGrantRead(db *DBConnection, d *schema.ResourceData) error {
 func resourceRedshiftGrantReadImpl(db *DBConnection, d *schema.ResourceData) error {
 	objectType := d.Get(grantObjectTypeAttr).(string)
 
+	// Role grants are read from the SVV_*_PRIVILEGES system views, which expose
+	// identity_type = 'role' directly, instead of the legacy pg_catalog ACL-array
+	// parsing used below for users and groups.
+	if _, isRole := d.GetOk(grantRoleAttr); isRole {
+		return readRoleGrants(db, d, objectType)
+	}
+
 	switch objectType {
 	case "database":
 		return readDatabaseGrants(db, d)
@@ -209,6 +229,90 @@ func resourceRedshiftGrantReadImpl(db *DBConnection, d *schema.ResourceData) err
 	default:
 		return fmt.Errorf("Unsupported %s %s", grantObjectTypeAttr, objectType)
 	}
+}
+
+// readRoleGrants reads back the privileges currently granted to a role, using the
+// SVV_*_PRIVILEGES system views. Unlike the legacy ACL-parsing readers below (which
+// exist for backward compatibility with the user/group grants they were written for),
+// these views report one row per (object, privilege, identity) directly, filterable
+// by identity_type = 'role', so no ACL-array decoding is needed.
+func readRoleGrants(db *DBConnection, d *schema.ResourceData, objectType string) error {
+	roleName := d.Get(grantRoleAttr).(string)
+	schemaName := d.Get(grantSchemaAttr).(string)
+	objects := d.Get(grantObjectsAttr).(*schema.Set)
+
+	// Configured objects are matched against the bare object name reported by the
+	// system views below. For functions/procedures, `objects` holds full signatures
+	// (e.g. "my_function(float)"), so those are compared without their argument list,
+	// same as the legacy ACL-based readCallableGrants.
+	matchableObjects := objects
+	isCallable := strings.ToUpper(objectType) == "FUNCTION" || strings.ToUpper(objectType) == "PROCEDURE"
+	if isCallable {
+		matchableObjects = schema.NewSet(schema.HashString, nil)
+		for _, name := range stripArgumentsFromCallablesDefinitions(objects) {
+			matchableObjects.Add(name)
+		}
+	}
+
+	var query string
+	var args []interface{}
+	// objectColumn indicates whether a row identifies an individual object (table/function
+	// name) that its privilege applies to. Left false for object types with no such column
+	// (database, schema, language), where privileges apply globally rather than per-object.
+	hasObjectColumn := false
+
+	switch strings.ToUpper(objectType) {
+	case "DATABASE":
+		query = "SELECT privilege_type FROM svv_database_privileges WHERE database_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		args = []interface{}{db.client.databaseName, roleName}
+	case "SCHEMA":
+		query = "SELECT privilege_type FROM svv_schema_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		args = []interface{}{schemaName, roleName}
+	case "TABLE":
+		hasObjectColumn = true
+		query = "SELECT relation_name, privilege_type FROM svv_relation_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		args = []interface{}{schemaName, roleName}
+	case "FUNCTION", "PROCEDURE":
+		hasObjectColumn = true
+		query = "SELECT function_name, privilege_type FROM svv_function_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		args = []interface{}{schemaName, roleName}
+	case "LANGUAGE":
+		hasObjectColumn = true
+		query = "SELECT language_name, privilege_type FROM svv_language_privileges WHERE identity_type = 'role' AND identity_name = $1"
+		args = []interface{}{roleName}
+	default:
+		return fmt.Errorf("Unsupported %s %s", grantObjectTypeAttr, objectType)
+	}
+
+	log.Printf("[DEBUG] Reading role grants for role %s: %s", roleName, query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("error reading role grants: %w", err)
+	}
+	defer rows.Close()
+
+	privileges := schema.NewSet(schema.HashString, nil)
+	for rows.Next() {
+		var privilege, objName string
+		if hasObjectColumn {
+			if err := rows.Scan(&objName, &privilege); err != nil {
+				return err
+			}
+			if matchableObjects.Len() > 0 && !matchableObjects.Contains(objName) {
+				continue
+			}
+		} else {
+			if err := rows.Scan(&privilege); err != nil {
+				return err
+			}
+		}
+		privileges.Add(strings.ToLower(privilege))
+	}
+
+	d.Set(grantPrivilegesAttr, privileges)
+
+	return nil
 }
 
 func readDatabaseGrants(db *DBConnection, d *schema.ResourceData) error {
@@ -665,6 +769,9 @@ func createGrantsRevokeQuery(d *schema.ResourceData, databaseName string) string
 		entityName = groupName.(string)
 	} else if userName, isUser := d.GetOk(grantUserAttr); isUser {
 		entityName = userName.(string)
+	} else if roleName, isRole := d.GetOk(grantRoleAttr); isRole {
+		toWhomIndicator = "ROLE"
+		entityName = roleName.(string)
 	}
 
 	fromEntityName := pq.QuoteIdentifier(entityName)
@@ -751,6 +858,9 @@ func createGrantsQuery(d *schema.ResourceData, databaseName string) string {
 		entityName = groupName.(string)
 	} else if userName, isUser := d.GetOk(grantUserAttr); isUser {
 		entityName = userName.(string)
+	} else if roleName, isRole := d.GetOk(grantRoleAttr); isRole {
+		toWhomIndicator = "ROLE"
+		entityName = roleName.(string)
 	}
 
 	toEntityName := pq.QuoteIdentifier(entityName)
@@ -848,6 +958,10 @@ func generateGrantID(d *schema.ResourceData) string {
 
 	if _, isUser := d.GetOk(grantUserAttr); isUser {
 		parts = append(parts, fmt.Sprintf("un:%s", d.Get(grantUserAttr).(string)))
+	}
+
+	if _, isRole := d.GetOk(grantRoleAttr); isRole {
+		parts = append(parts, fmt.Sprintf("rn:%s", d.Get(grantRoleAttr).(string)))
 	}
 
 	objectType := fmt.Sprintf("ot:%s", d.Get(grantObjectTypeAttr).(string))

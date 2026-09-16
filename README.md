@@ -1,18 +1,19 @@
-# Terraform Provider for AWS Redshift (Fork with Serverless Support)
+# Terraform Provider for AWS Redshift (ReUp fork — adding role support)
 
 > [!NOTE]
-> This is a forked version of the original [brainly/terraform-provider-redshift](https://github.com/brainly/terraform-provider-redshift) repository.
+> This is ReUp Education's fork of [serenityzn/terraform-provider-redshift](https://github.com/serenityzn/terraform-provider-redshift), which is itself a fork of the original, now-deprecated [brainly/terraform-provider-redshift](https://github.com/brainly/terraform-provider-redshift).
 >
-> **Original Repository Status:** Deprecated - The original repository is no longer maintained.
+> **Upstream (serenityzn) status:** Actively maintained, adds Redshift Serverless support on top of the original brainly feature set.
 >
-> **This Fork:** Adds support for AWS Redshift Serverless features and continues maintenance.
+> **This fork:** Adds support for Redshift's role-based access control (`CREATE ROLE` / `GRANT ROLE` / role assignment) — not yet available upstream. Once stable, we intend to upstream this as a PR to serenityzn/terraform-provider-redshift; this fork exists independently in case that PR isn't accepted.
 
-This provider allows you to manage [AWS Redshift](https://aws.amazon.com/redshift/) objects with Terraform — users, groups, schemas, grants, databases, and more — for both provisioned clusters and Redshift Serverless.
+This provider allows you to manage [AWS Redshift](https://aws.amazon.com/redshift/) objects with Terraform — users, groups, roles, schemas, grants, databases, and more — for both provisioned clusters and Redshift Serverless.
 
-It's published on the [Terraform registry](https://registry.terraform.io/providers/serenityzn/redshift/latest/docs).
+The upstream provider is published on the [Terraform registry](https://registry.terraform.io/providers/serenityzn/redshift/latest/docs). This fork is not (yet) published there — see [Building The Provider](#building-the-provider) for using it directly from source until it is upstreamed or published independently.
 
 ## Features
 
+- **Role support (this fork)**: Manage Redshift roles and role-based access control (RBAC) with three new resources — `redshift_role` (create/rename/drop roles), `redshift_role_system_privileges` (grant system-level privileges to a role), and `redshift_role_grant` (assign a role to a user or to another role, including nested role hierarchies). See [`docs/resources/role.md`](docs/resources/role.md), [`docs/resources/role_system_privileges.md`](docs/resources/role_system_privileges.md), and [`docs/resources/role_grant.md`](docs/resources/role_grant.md).
 - **Redshift Serverless Support**: Use `type = "serverless"` for Redshift Serverless deployments
 - **IAM Temporary Credentials for Serverless**: Use `temporary_credentials_serverless` to authenticate via AWS IAM without storing passwords
 - **IAM Temporary Credentials for Provisioned**: Use `temporary_credentials` to authenticate via `redshift:GetClusterCredentials`
@@ -96,6 +97,53 @@ provider "redshift" {
 ```
 
 ---
+
+## Role-Based Access Control (RBAC)
+
+This fork adds three resources to manage Amazon Redshift's [role-based access control](https://docs.aws.amazon.com/redshift/latest/dg/t_Roles.html):
+
+```hcl
+resource "redshift_role" "data_engineer" {
+  name = "data_engineer"
+}
+
+# Let the role create/drop schemas and tables without superuser access
+resource "redshift_role_system_privileges" "data_engineer" {
+  role       = redshift_role.data_engineer.name
+  privileges = ["create schema", "drop schema", "create table", "drop table", "alter table"]
+}
+
+# Assign the role to a user
+resource "redshift_role_grant" "data_engineer_to_alice" {
+  role = redshift_role.data_engineer.name
+  user = redshift_user.alice.name
+}
+
+# Roles can also be nested by granting one role to another
+resource "redshift_role_grant" "data_engineer_to_analyst" {
+  role         = redshift_role.data_engineer.name
+  grantee_role = redshift_role.analyst.name
+}
+
+# Object-level privileges (tables, schemas, databases, functions, procedures,
+# languages) can also be granted directly to a role with redshift_grant
+resource "redshift_grant" "data_engineer_schema_access" {
+  role        = redshift_role.data_engineer.name
+  schema      = "my_schema"
+  object_type = "schema"
+  privileges  = ["create", "usage"]
+}
+
+# Default privileges (applied automatically to future objects) can be granted
+# to a role too, so new tables don't need a redshift_grant every time
+resource "redshift_default_privileges" "data_engineer_defaults" {
+  role        = redshift_role.data_engineer.name
+  owner       = "root"
+  schema      = "my_schema"
+  object_type = "table"
+  privileges  = ["select", "insert"]
+}
+```
 
 ## IAM Temporary Credentials — How It Works
 
@@ -203,7 +251,7 @@ aws sts get-caller-identity
 ## Building The Provider
 
 ```sh
-git clone git@github.com:serenityzn/terraform-provider-redshift
+git clone git@github.com:Reup-Education/terraform-provider-redshift
 cd terraform-provider-redshift
 make build
 ```
@@ -213,7 +261,7 @@ make build
 Build and install the provider locally without publishing to the registry:
 
 ```sh
-go build -o ~/.terraform.d/plugins/registry.terraform.io/serenityzn/redshift/1.3.1/darwin_arm64/terraform-provider-redshift_v1.3.1
+go build -o ~/.terraform.d/plugins/registry.terraform.io/Reup-Education/redshift/1.3.6/darwin_arm64/terraform-provider-redshift_v1.3.6
 ```
 
 Then reference it normally in your Terraform config:
@@ -222,8 +270,8 @@ Then reference it normally in your Terraform config:
 terraform {
   required_providers {
     redshift = {
-      source  = "serenityzn/redshift"
-      version = "1.3.1"
+      source  = "Reup-Education/redshift"
+      version = "1.3.6"
     }
   }
 }
