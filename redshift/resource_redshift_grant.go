@@ -236,6 +236,18 @@ func resourceRedshiftGrantReadImpl(db *DBConnection, d *schema.ResourceData) err
 // exist for backward compatibility with the user/group grants they were written for),
 // these views report one row per (object, privilege, identity) directly, filterable
 // by identity_type = 'role', so no ACL-array decoding is needed.
+func normalizeRolePrivileges(privileges []interface{}) *schema.Set {
+	set := schema.NewSet(schema.HashString, nil)
+	for _, privilege := range privileges {
+		normalized := strings.TrimSpace(strings.ToLower(privilege.(string)))
+		if normalized == "" {
+			continue
+		}
+		set.Add(normalized)
+	}
+	return set
+}
+
 func readRoleGrants(db *DBConnection, d *schema.ResourceData, objectType string) error {
 	roleName := d.Get(grantRoleAttr).(string)
 	schemaName := d.Get(grantSchemaAttr).(string)
@@ -270,15 +282,27 @@ func readRoleGrants(db *DBConnection, d *schema.ResourceData, objectType string)
 		args = []interface{}{schemaName, roleName}
 	case "TABLE":
 		hasObjectColumn = true
-		query = "SELECT relation_name, privilege_type FROM svv_relation_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		if matchableObjects.Len() == 0 {
+			query = "SELECT DISTINCT privilege_type FROM svv_relation_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		} else {
+			query = "SELECT relation_name, privilege_type FROM svv_relation_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		}
 		args = []interface{}{schemaName, roleName}
 	case "FUNCTION", "PROCEDURE":
 		hasObjectColumn = true
-		query = "SELECT function_name, privilege_type FROM svv_function_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		if matchableObjects.Len() == 0 {
+			query = "SELECT DISTINCT privilege_type FROM svv_function_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		} else {
+			query = "SELECT function_name, privilege_type FROM svv_function_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		}
 		args = []interface{}{schemaName, roleName}
 	case "LANGUAGE":
 		hasObjectColumn = true
-		query = "SELECT language_name, privilege_type FROM svv_language_privileges WHERE identity_type = 'role' AND identity_name = $1"
+		if matchableObjects.Len() == 0 {
+			query = "SELECT DISTINCT privilege_type FROM svv_language_privileges WHERE identity_type = 'role' AND identity_name = $1"
+		} else {
+			query = "SELECT language_name, privilege_type FROM svv_language_privileges WHERE identity_type = 'role' AND identity_name = $1"
+		}
 		args = []interface{}{roleName}
 	default:
 		return fmt.Errorf("Unsupported %s %s", grantObjectTypeAttr, objectType)
@@ -296,21 +320,27 @@ func readRoleGrants(db *DBConnection, d *schema.ResourceData, objectType string)
 	for rows.Next() {
 		var privilege, objName string
 		if hasObjectColumn {
-			if err := rows.Scan(&objName, &privilege); err != nil {
-				return err
-			}
-			if matchableObjects.Len() > 0 && !matchableObjects.Contains(objName) {
-				continue
+			if matchableObjects.Len() == 0 {
+				if err := rows.Scan(&privilege); err != nil {
+					return err
+				}
+			} else {
+				if err := rows.Scan(&objName, &privilege); err != nil {
+					return err
+				}
+				if !matchableObjects.Contains(objName) {
+					continue
+				}
 			}
 		} else {
 			if err := rows.Scan(&privilege); err != nil {
 				return err
 			}
 		}
-		privileges.Add(strings.ToLower(privilege))
+		privileges.Add(strings.ToLower(strings.TrimSpace(privilege)))
 	}
 
-	d.Set(grantPrivilegesAttr, privileges)
+	d.Set(grantPrivilegesAttr, normalizeRolePrivileges(privileges.List()))
 
 	return nil
 }

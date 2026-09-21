@@ -1,8 +1,33 @@
 package redshift
 
 import (
+	"sort"
 	"testing"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
+
+func TestNormalizeRolePrivileges(t *testing.T) {
+	gotSet := normalizeRolePrivileges([]interface{}{"SELECT", "select", " insert ", "", "DELETE", "delete"})
+	got := make([]string, 0, gotSet.Len())
+	for _, value := range gotSet.List() {
+		got = append(got, value.(string))
+	}
+	want := []string{"delete", "insert", "select"}
+	sort.Strings(got)
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d privileges, got %d: %v", len(want), len(got), got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("expected privilege %q at index %d, got %q", want[i], i, got[i])
+		}
+	}
+
+	_ = schema.NewSet
+}
 
 func TestValidatePrivileges(t *testing.T) {
 	tests := map[string]struct {
