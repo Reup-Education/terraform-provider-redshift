@@ -214,6 +214,46 @@ func validatePrivileges(privileges []string, objectType string) bool {
 	return true
 }
 
+// scopedGrantPrivileges lists, for each scope of a scoped permission, the privileges
+// that GRANT ... FOR <scope> IN accepts.
+var scopedGrantPrivileges = map[string][]string{
+	"schemas":   {"create", "usage", "alter", "drop"},
+	"tables":    {"select", "insert", "update", "delete", "drop", "alter", "truncate", "references"},
+	"functions": {"execute"},
+	"languages": {"usage"},
+	"copy jobs": {"create", "alter", "drop"},
+}
+
+// validateScopedPrivileges returns an error if a privilege is not valid for the scope.
+// It rejects ALL, because Redshift stores a scoped GRANT ALL as one row for each
+// privilege, which would never match a configured value of "all".
+func validateScopedPrivileges(privileges []string, scope string) error {
+	allowed, ok := scopedGrantPrivileges[scope]
+	if !ok {
+		return fmt.Errorf("unsupported scope %q", scope)
+	}
+
+	for _, p := range privileges {
+		normalized := strings.ToLower(strings.TrimSpace(p))
+		if normalized == "all" || normalized == "all privileges" {
+			return fmt.Errorf("privilege %q is not supported for scoped permissions, list each privilege instead (valid for scope %q: %s)", p, scope, strings.Join(allowed, ", "))
+		}
+
+		valid := false
+		for _, a := range allowed {
+			if normalized == a {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("privilege %q is not valid for scope %q (valid: %s)", p, scope, strings.Join(allowed, ", "))
+		}
+	}
+
+	return nil
+}
+
 func appendIfTrue(condition bool, item string, list *[]string) {
 	if condition {
 		*list = append(*list, item)

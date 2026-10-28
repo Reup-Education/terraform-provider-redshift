@@ -183,6 +183,7 @@ func Provider() *schema.Provider {
 			"redshift_role":                   redshiftRole(),
 			"redshift_role_grant":             redshiftRoleGrant(),
 			"redshift_role_system_privileges": redshiftRoleSystemPrivileges(),
+			"redshift_scoped_grant":           redshiftScopedGrant(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
 			"redshift_user":      dataSourceRedshiftUser(),

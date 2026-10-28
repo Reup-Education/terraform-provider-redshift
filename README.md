@@ -14,6 +14,7 @@ The upstream provider is published on the [Terraform registry](https://registry.
 ## Features
 
 - **Role support (this fork)**: Manage Redshift roles and role-based access control (RBAC) with three new resources — `redshift_role` (create/rename/drop roles), `redshift_role_system_privileges` (grant system-level privileges to a role), and `redshift_role_grant` (assign a role to a user or to another role, including nested role hierarchies). See [`docs/resources/role.md`](docs/resources/role.md), [`docs/resources/role_system_privileges.md`](docs/resources/role_system_privileges.md), and [`docs/resources/role_grant.md`](docs/resources/role_grant.md).
+- **Scoped permissions (this fork)**: Grant privileges on all current and future objects of one type in a database or schema with `redshift_scoped_grant` (`GRANT ... FOR TABLES IN SCHEMA ...`). See [`docs/resources/scoped_grant.md`](docs/resources/scoped_grant.md).
 - **Redshift Serverless Support**: Use `type = "serverless"` for Redshift Serverless deployments
 - **IAM Temporary Credentials for Serverless**: Use `temporary_credentials_serverless` to authenticate via AWS IAM without storing passwords
 - **IAM Temporary Credentials for Provisioned**: Use `temporary_credentials` to authenticate via `redshift:GetClusterCredentials`
@@ -144,6 +145,29 @@ resource "redshift_default_privileges" "data_engineer_defaults" {
   privileges  = ["select", "insert"]
 }
 ```
+
+## Scoped Permissions
+
+`redshift_scoped_grant` manages Amazon Redshift [scoped permissions](https://docs.aws.amazon.com/redshift/latest/dg/t_scoped-permissions.html). A scoped permission applies to all current and future objects of one type in a database or schema, so new tables, functions, or schemas do not need a separate grant:
+
+```hcl
+# Read access to all current and future tables in the sales schema
+resource "redshift_scoped_grant" "analyst_tables" {
+  role       = redshift_role.analyst.name
+  scope      = "tables"
+  schema     = "sales"
+  privileges = ["select"]
+}
+
+# Usage on all current and future schemas in the database
+resource "redshift_scoped_grant" "analyst_schemas" {
+  role       = redshift_role.analyst.name
+  scope      = "schemas"
+  privileges = ["usage"]
+}
+```
+
+Unlike `redshift_default_privileges`, scoped permissions apply no matter which user creates the objects. The grantee can be a user, a role, or PUBLIC. Groups are not supported.
 
 ## IAM Temporary Credentials — How It Works
 

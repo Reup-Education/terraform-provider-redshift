@@ -141,6 +141,42 @@ func TestValidatePrivileges(t *testing.T) {
 	}
 }
 
+func TestValidateScopedPrivileges(t *testing.T) {
+	tests := map[string]struct {
+		privileges []string
+		scope      string
+		valid      bool
+	}{
+		"valid list for schemas":         {[]string{"create", "usage", "alter", "drop"}, "schemas", true},
+		"valid list for tables":          {[]string{"select", "insert", "update", "delete", "drop", "alter", "truncate", "references"}, "tables", true},
+		"valid list for functions":       {[]string{"execute"}, "functions", true},
+		"valid list for languages":       {[]string{"usage"}, "languages", true},
+		"valid list for copy jobs":       {[]string{"create", "alter", "drop"}, "copy jobs", true},
+		"uppercase privileges":           {[]string{"SELECT", "Insert"}, "tables", true},
+		"empty list":                     {[]string{}, "tables", true},
+		"invalid privilege for schemas":  {[]string{"select"}, "schemas", false},
+		"invalid privilege for tables":   {[]string{"usage"}, "tables", false},
+		"invalid privilege for function": {[]string{"select"}, "functions", false},
+		"temporary is not scoped":        {[]string{"temporary"}, "schemas", false},
+		"all is rejected":                {[]string{"all"}, "tables", false},
+		"all privileges is rejected":     {[]string{"ALL PRIVILEGES"}, "tables", false},
+		"unknown scope":                  {[]string{"select"}, "views", false},
+		"procedures is not a scope":      {[]string{"execute"}, "procedures", false},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateScopedPrivileges(tt.privileges, tt.scope)
+			if tt.valid && err != nil {
+				t.Fatalf("expected %v to be valid for scope %q, got error: %s", tt.privileges, tt.scope, err)
+			}
+			if !tt.valid && err == nil {
+				t.Fatalf("expected %v to be invalid for scope %q", tt.privileges, tt.scope)
+			}
+		})
+	}
+}
+
 func TestRedshiftResourceRetryOnPQErrors(t *testing.T) {
 	originalDelay := pqRetryBaseDelay
 	pqRetryBaseDelay = 0
