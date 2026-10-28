@@ -3,6 +3,7 @@ package redshift
 import (
 	"database/sql"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -91,21 +92,32 @@ func RedshiftResourceFunc(fn func(*DBConnection, *schema.ResourceData) error) fu
 	}
 }
 
+// pqRetryBaseDelay is the delay before the first retry in RedshiftResourceRetryOnPQErrors.
+// Each next retry waits one more base delay than the one before.
+var pqRetryBaseDelay = time.Second
+
+// RedshiftResourceRetryOnPQErrors runs fn again, up to 10 times in total, while it
+// returns a retryable pq error. The pq error can be wrapped. If all tries fail, it
+// returns the error of the last try.
 func RedshiftResourceRetryOnPQErrors(fn func(*DBConnection, *schema.ResourceData) error) func(*DBConnection, *schema.ResourceData) error {
 	return func(db *DBConnection, d *schema.ResourceData) error {
+		var err error
 		for i := 0; i < 10; i++ {
-			err := fn(db, d)
+			err = fn(db, d)
 			if err == nil {
 				return nil
 			}
 
-			if pqErr, ok := err.(*pq.Error); !ok || !isRetryablePQError(string(pqErr.Code)) {
+			var pqErr *pq.Error
+			if !errors.As(err, &pqErr) || !isRetryablePQError(string(pqErr.Code)) {
 				return err
 			}
 
-			time.Sleep(time.Duration(i+1) * time.Second)
+			if i < 9 {
+				time.Sleep(time.Duration(i+1) * pqRetryBaseDelay)
+			}
 		}
-		return nil
+		return err
 	}
 }
 
