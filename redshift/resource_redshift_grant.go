@@ -274,11 +274,15 @@ func readRoleGrants(db *DBConnection, d *schema.ResourceData, objectType string)
 	hasObjectColumn := false
 
 	switch strings.ToUpper(objectType) {
+	// SVV_DATABASE_PRIVILEGES and SVV_SCHEMA_PRIVILEGES also contain scoped permissions
+	// (GRANT ... FOR TABLES IN SCHEMA ...), with privilege_scope set to the object type
+	// of the scope. Grants made ON DATABASE or ON SCHEMA always have privilege_scope
+	// DATABASE or SCHEMA, so the filters below exclude all scoped permissions.
 	case "DATABASE":
-		query = "SELECT privilege_type FROM svv_database_privileges WHERE database_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		query = "SELECT privilege_type FROM svv_database_privileges WHERE database_name = $1 AND identity_type = 'role' AND identity_name = $2 AND privilege_scope = 'DATABASE'"
 		args = []interface{}{db.client.databaseName, roleName}
 	case "SCHEMA":
-		query = "SELECT privilege_type FROM svv_schema_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2"
+		query = "SELECT privilege_type FROM svv_schema_privileges WHERE namespace_name = $1 AND identity_type = 'role' AND identity_name = $2 AND privilege_scope = 'SCHEMA'"
 		args = []interface{}{schemaName, roleName}
 	case "TABLE":
 		hasObjectColumn = true

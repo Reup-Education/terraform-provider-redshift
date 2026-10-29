@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+**New features (ReUp fork):**
+
+- Add `redshift_scoped_grant` resource to grant scoped permissions (`GRANT ... FOR { SCHEMAS | TABLES | FUNCTIONS | LANGUAGES | COPY JOBS } IN ...`) to a user, a role, or PUBLIC, on all current and future objects in a database or schema
+
 ## [v1.4.0](https://github.com/Reup-Education/terraform-provider-redshift/tree/v1.4.0) (2026-09-16)
 
 [Full Changelog](https://github.com/Reup-Education/terraform-provider-redshift/compare/v1.3.6...v1.4.0)

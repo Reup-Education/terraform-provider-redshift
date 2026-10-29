@@ -657,6 +657,130 @@ func testAccRedshiftGrant_Regression_Issue_43_compare_ids(addr1 string, addr2 st
 	}
 }
 
+// A scoped permission on the same schema must not appear in the privileges of a
+// schema grant to a role, because both are stored in SVV_SCHEMA_PRIVILEGES.
+func TestAccRedshiftGrant_RoleSchemaIgnoresScopedPermissions(t *testing.T) {
+	roleName := strings.ReplaceAll(acctest.RandomWithPrefix("tf_acc_role"), "-", "_")
+	schemaName := strings.ReplaceAll(acctest.RandomWithPrefix("tf_acc_schema"), "-", "_")
+
+	config := fmt.Sprintf(`
+resource "redshift_role" "role" {
+  name          = %[1]q
+  force_destroy = true
+}
+
+resource "redshift_schema" "schema" {
+  name = %[2]q
+}
+
+resource "redshift_grant" "grant" {
+  role        = redshift_role.role.name
+  schema      = redshift_schema.schema.name
+  object_type = "schema"
+  privileges  = ["usage"]
+}
+`, roleName, schemaName)
+
+	target := fmt.Sprintf("SCHEMA %s DATABASE %%s", pq.QuoteIdentifier(schemaName))
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: func(s *terraform.State) error { return nil },
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+			},
+			{
+				PreConfig: func() {
+					testAccRedshiftGrant_execScopedPermission(t, "GRANT SELECT, INSERT FOR TABLES IN %s TO ROLE %s", target, roleName)
+				},
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("redshift_grant.grant", "privileges.#", "1"),
+					resource.TestCheckTypeSetElemAttr("redshift_grant.grant", "privileges.*", "usage"),
+				),
+			},
+			{
+				PreConfig: func() {
+					testAccRedshiftGrant_execScopedPermission(t, "REVOKE ALL FOR TABLES IN %s FROM ROLE %s", target, roleName)
+				},
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// A scoped permission in the same database must not appear in the privileges of a
+// database grant to a role, because both are stored in SVV_DATABASE_PRIVILEGES.
+func TestAccRedshiftGrant_RoleDatabaseIgnoresScopedPermissions(t *testing.T) {
+	roleName := strings.ReplaceAll(acctest.RandomWithPrefix("tf_acc_role"), "-", "_")
+
+	config := fmt.Sprintf(`
+resource "redshift_role" "role" {
+  name          = %[1]q
+  force_destroy = true
+}
+
+resource "redshift_grant" "grant" {
+  role        = redshift_role.role.name
+  object_type = "database"
+  privileges  = ["create"]
+}
+`, roleName)
+
+	target := "DATABASE %s"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: func(s *terraform.State) error { return nil },
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+			},
+			{
+				PreConfig: func() {
+					testAccRedshiftGrant_execScopedPermission(t, "GRANT USAGE FOR SCHEMAS IN %s TO ROLE %s", target, roleName)
+				},
+				Config: config,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("redshift_grant.grant", "privileges.#", "1"),
+					resource.TestCheckTypeSetElemAttr("redshift_grant.grant", "privileges.*", "create"),
+				),
+			},
+			{
+				PreConfig: func() {
+					testAccRedshiftGrant_execScopedPermission(t, "REVOKE ALL FOR SCHEMAS IN %s FROM ROLE %s", target, roleName)
+				},
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// testAccRedshiftGrant_execScopedPermission runs a scoped GRANT or REVOKE statement
+// outside of Terraform. The statement format has two verbs: the scope target, and the
+// role name. The target format has one verb for the database name of the provider.
+func testAccRedshiftGrant_execScopedPermission(t *testing.T, statement, target, roleName string) {
+	client := testAccProvider.Meta().(*Client)
+	conn, err := client.Connect()
+	if err != nil {
+		t.Fatalf("couldn't start redshift connection: %s", err)
+	}
+
+	query := fmt.Sprintf(
+		statement,
+		fmt.Sprintf(target, pq.QuoteIdentifier(client.databaseName)),
+		pq.QuoteIdentifier(roleName),
+	)
+	if _, err := conn.Exec(query); err != nil {
+		t.Fatalf("couldn't run %q: %s", query, err)
+	}
+}
+
 func testAccRedshiftGrant_basicCallables_configUserGroup(username, group, schema string) string {
 	return fmt.Sprintf(`
 resource "redshift_user" "user" {
